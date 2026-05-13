@@ -169,46 +169,345 @@ best_autoencoder.decoder.summary()
 
 encoded_layer = best_autoencoder.encoder(test_corrupted).numpy()
 decoded_layer = best_autoencoder.decoder(encoded_layer).numpy()
-decoded_layer = np.squeeze(decoded_layer) # back to 2-dimensional array
+# decoded_layer = np.squeeze(decoded_layer) # back to 2-dimensional array
+
+
+
+
+#%% EEG before and after tACS removal ---- time-frequency comparison
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pywt
+from scipy.stats import pearsonr
+
+# ==========================================================
+# Settings
+# ==========================================================
+fs = 500                      # sampling rate, Hz
+wavelet = "morl"              # Morlet wavelet
+freq_min = 1                  # Hz
+freq_max = 45                 # Hz
+num_freqs = 100
+sample_id = 5                # choose which test segment to visualize
+
+# ==========================================================
+# Prepare data shape: [num_samples, 1000]
+# ==========================================================
+x_corrupted = np.squeeze(test_corrupted)
+x_clean = np.squeeze(test_clean)
+x_reconstructed = np.squeeze(decoded_layer)
+
+print("Corrupted shape:", x_corrupted.shape)
+print("Clean shape:", x_clean.shape)
+print("Reconstructed shape:", x_reconstructed.shape)
+
+num_samples, signal_len = x_clean.shape
+time_axis = np.arange(signal_len) / fs
+
+# ==========================================================
+# CWT function
+# ==========================================================
+def compute_cwt(signal_1d, fs, freq_min=1, freq_max=80, num_freqs=100, wavelet="morl"):
+    freqs = np.linspace(freq_min, freq_max, num_freqs)
+    central_freq = pywt.central_frequency(wavelet)
+    scales = central_freq * fs / freqs
+
+    coeffs, _ = pywt.cwt(signal_1d, scales, wavelet, sampling_period=1/fs)
+    power = np.abs(coeffs)
+
+    return power, freqs
+
+# ==========================================================
+# Compute CWT similarity statistics
+# Clean CWT is used as the ground truth
+# ==========================================================
+corr_clean_recon = []
+corr_clean_corrupted = []
+
+for i in range(num_samples):
+
+    cwt_clean, freqs = compute_cwt(
+        x_clean[i], fs, freq_min, freq_max, num_freqs, wavelet
+    )
+
+    cwt_recon, _ = compute_cwt(
+        x_reconstructed[i], fs, freq_min, freq_max, num_freqs, wavelet
+    )
+
+    cwt_corrupted, _ = compute_cwt(
+        x_corrupted[i], fs, freq_min, freq_max, num_freqs, wavelet
+    )
+
+    # Flatten 2D scalograms and compute Pearson correlation
+    r_recon, _ = pearsonr(cwt_clean.flatten(), cwt_recon.flatten())
+    r_corrupted, _ = pearsonr(cwt_clean.flatten(), cwt_corrupted.flatten())
+
+    corr_clean_recon.append(r_recon)
+    corr_clean_corrupted.append(r_corrupted)
+
+corr_clean_recon = np.array(corr_clean_recon)
+corr_clean_corrupted = np.array(corr_clean_corrupted)
+
+print("\n===== CWT Scalogram Similarity Statistics =====")
+print("Clean vs Reconstructed:")
+print(f"Mean correlation = {np.mean(corr_clean_recon):.4f}")
+print(f"Std correlation  = {np.std(corr_clean_recon):.4f}")
+
+print("\nClean vs Corrupted:")
+print(f"Mean correlation = {np.mean(corr_clean_corrupted):.4f}")
+print(f"Std correlation  = {np.std(corr_clean_corrupted):.4f}")
+
+# ==========================================================
+# Helper: min-max normalization to [0, 1]
+# ==========================================================
+def minmax_norm(x):
+    x_min = np.min(x)
+    x_max = np.max(x)
+    if x_max == x_min:
+        return np.zeros_like(x)
+    return (x - x_min) / (x_max - x_min)
+
+
+
+# ==========================================================
+# Plot one example: also print CC of current plotted case
+# ==========================================================
+
+sig_corrupted = x_corrupted[sample_id]
+
+sig_clean = minmax_norm(x_clean[sample_id])
+sig_recon = minmax_norm(x_reconstructed[sample_id])
+
+# CWT after normalization
+cwt_corrupted, freqs = compute_cwt(sig_corrupted, fs, freq_min, freq_max, num_freqs, wavelet)
+cwt_clean, _ = compute_cwt(sig_clean, fs, freq_min, freq_max, num_freqs, wavelet)
+cwt_recon, _ = compute_cwt(sig_recon, fs, freq_min, freq_max, num_freqs, wavelet)
+
+# ==========================================================
+# Correlation coefficients for current plotted sample
+# ==========================================================
+cc_time, _ = pearsonr(sig_clean.flatten(), sig_recon.flatten())
+cc_cwt, _ = pearsonr(cwt_clean.flatten(), cwt_recon.flatten())
+
+print("====================================")
+print("Current plotted sample ID:", sample_id)
+print("Time-domain CC (GT vs Recon): %.4f" % cc_time)
+print("CWT-domain  CC (GT vs Recon): %.4f" % cc_cwt)
+print("====================================")
+
+# ==========================================================
+# Better plotting style for paper
+# ==========================================================
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 15,
+    "axes.labelsize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 11
+})
+
+fig, axes = plt.subplots(2, 3, figsize=(24, 8), constrained_layout=True)
+
+# --------------------------
+# Time-domain plots
+# --------------------------
+axes[0,0].plot(time_axis, sig_corrupted, color="tab:blue", linewidth=1.8)
+axes[0,0].set_title("Corrupted EEG")
+axes[0,0].set_xlabel("Time (s)")
+axes[0,0].set_ylabel("Amplitude")
+
+axes[0,1].plot(time_axis, sig_clean, color="tab:green", linewidth=1.8)
+axes[0,1].set_title("Ground-truth EEG")
+axes[0,1].set_xlabel("Time (s)")
+axes[0,1].set_ylabel("Normalized")
+
+axes[0,2].plot(time_axis, sig_clean, color="tab:green",
+               linewidth=1.8, label="Ground-truth")
+
+axes[0,2].plot(time_axis, sig_recon,
+               color="tab:orange",
+               linestyle="--",
+               linewidth=2.0,
+               label="Reconstructed")
+
+axes[0,2].set_title(f"Recon EEG (Time domain CC={cc_time:.3f})")
+axes[0,2].set_xlabel("Time (s)")
+axes[0,2].set_ylabel("Normalized")
+axes[0,2].legend(frameon=False)
+
+# --------------------------
+# CWT plots
+# --------------------------
+extent = [time_axis[0], time_axis[-1], freqs[0], freqs[-1]]
+
+im0 = axes[1,0].imshow(
+    cwt_corrupted,
+    extent=extent,
+    aspect="auto",
+    origin="lower",
+    cmap="turbo"
+)
+axes[1,0].set_title("CWT: Corrupted EEG")
+axes[1,0].set_xlabel("Time (s)")
+axes[1,0].set_ylabel("Frequency (Hz)")
+axes[1,0].set_ylim([0,45])
+fig.colorbar(im0, ax=axes[1,0], shrink=0.9)
+
+im1 = axes[1,1].imshow(
+    cwt_clean,
+    extent=extent,
+    aspect="auto",
+    origin="lower",
+    cmap="turbo"
+)
+axes[1,1].set_title("CWT: Ground-truth EEG")
+axes[1,1].set_xlabel("Time (s)")
+axes[1,1].set_ylabel("Frequency (Hz)")
+axes[1,1].set_ylim([0,45])
+fig.colorbar(im1, ax=axes[1,1], shrink=0.9)
+
+im2 = axes[1,2].imshow(
+    cwt_recon,
+    extent=extent,
+    aspect="auto",
+    origin="lower",
+    cmap="turbo"
+)
+axes[1,2].set_title(f"CWT: Recon (Scalogram CC={cc_cwt:.3f})")
+axes[1,2].set_xlabel("Time (s)")
+axes[1,2].set_ylabel("Frequency (Hz)")
+axes[1,2].set_ylim([0,45])
+fig.colorbar(im2, ax=axes[1,2], shrink=0.9)
+
+
+
+# ==========================================================
+# Save as PDF
+# ==========================================================
+plt.savefig(
+    "EEG_CWT_Comparison.pdf",
+    format="pdf",
+    bbox_inches="tight"
+)
+
+plt.show()
+
 
 
 #%% model inference time
-import time
+# ==========================================================
+# TensorFlow Online Inference Latency Benchmark (CPU / GPU)
+# Using actual test data: test_corrupted
+# Shape = (213, 1000, 1)
+# ==========================================================
 
-start_time = time.time()
-
-encoded_layer = best_autoencoder.encoder(test_corrupted).numpy()
-decoded_layer = best_autoencoder.decoder(encoded_layer).numpy()
-decoded_layer = np.squeeze(decoded_layer) # back to 2-dimensional array
-
-end_time = time.time()
-
-print(f"Execution time: {end_time - start_time:.6f} seconds")
-
-
-#%% model inference time for a single sample
+import os
 import time
 import numpy as np
+import tensorflow as tf
 
-# Ensure correct shape: test_corrupted should be [213, 1000, 1]
+# ==========================================================
+# USER SETTINGS
+# ==========================================================
+MODEL_PATH = "best_autoencoder"
+USE_DEVICE = "CPU"        # change to "CPU" or "GPU"
+
+# ==========================================================
+# SELECT DEVICE
+# ==========================================================
+if USE_DEVICE.upper() == "CPU":
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+print("TensorFlow Version:", tf.__version__)
+print("Available Devices:", tf.config.list_physical_devices())
+
+# ==========================================================
+# LOAD MODEL
+# ==========================================================
+model = tf.keras.models.load_model(MODEL_PATH)
+
+# ==========================================================
+# FAST INFERENCE GRAPH
+# ==========================================================
+@tf.function
+def run_model(x):
+    return model(x, training=False)
+
+# ==========================================================
+# CHECK INPUT DATA
+# test_corrupted should already exist in memory
+# shape = (213,1000,1)
+# ==========================================================
+print("Input data shape:", test_corrupted.shape)
+
 num_samples = test_corrupted.shape[0]
-total_time = 0.0
+
+# ==========================================================
+# WARM-UP
+# ==========================================================
+print("Warming up...")
+
+dummy = test_corrupted[0:1].astype(np.float32)
+
+for _ in range(10):
+    _ = run_model(dummy)
+
+# ==========================================================
+# ONLINE TEST
+# One sample arrives at a time
+# ==========================================================
+latencies = []
+
+print("Running benchmark...")
 
 for i in range(num_samples):
-    single_sample = test_corrupted[i]  # shape [1000, 1]
-    single_sample = np.expand_dims(single_sample, axis=0)  # shape [1, 1000, 1]
 
-    start_time = time.time()
-    
-    encoded_layer = best_autoencoder.encoder(single_sample).numpy()
-    decoded_layer = best_autoencoder.decoder(encoded_layer).numpy()
-    decoded_layer = np.squeeze(decoded_layer)
+    # get one incoming sample
+    x = test_corrupted[i:i+1].astype(np.float32)   # shape (1,1000,1)
 
-    end_time = time.time()
-    total_time += (end_time - start_time)
+    t0 = time.perf_counter()
 
-average_time = total_time / num_samples
-print(f"Average inference time per sample: {average_time:.6f} seconds")
+    output = run_model(x)
+    output = output.numpy()
+
+    t1 = time.perf_counter()
+
+    latency_ms = (t1 - t0) * 1000
+    latencies.append(latency_ms)
+
+# ==========================================================
+# RESULTS
+# ==========================================================
+latencies = np.array(latencies)
+
+print("\n==============================")
+print("DEVICE:", USE_DEVICE)
+print("Samples Tested:", num_samples)
+print("==============================")
+print("Average Latency : %.4f ms" % np.mean(latencies))
+print("Std Dev         : %.4f ms" % np.std(latencies))
+print("Min Latency     : %.4f ms" % np.min(latencies))
+print("Max Latency     : %.4f ms" % np.max(latencies))
+print("Throughput      : %.2f windows/sec" % (1000 / np.mean(latencies)))
+print("==============================")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -815,3 +1114,104 @@ ax.legend(title="Algorithms", fontsize=12, title_fontsize=13)
 
 plt.tight_layout()
 plt.show()
+
+
+
+
+
+#%% De-normalization
+
+de_test_data = Test_1mA_10Hz_alpha[0,:]
+
+start_idx = int(tacs_start_alpha)*sampling_rate-50
+end_idx = start_idx + sampling_rate*60
+
+
+x_data_prestim = de_test_data[0: start_idx]
+x_data_stim = de_test_data[start_idx : end_idx]
+x_data_poststim = de_test_data[end_idx : ]
+
+
+plt.figure()
+plt.subplot(311)
+plt.plot(x_data_prestim)
+plt.subplot(312)
+plt.plot(x_data_stim)
+plt.subplot(313)
+plt.plot(x_data_poststim)
+
+
+# load model
+best_autoencoder = tf.keras.models.load_model("best_autoencoder")
+
+
+def min_max_normalize(epoch):
+    min_val = np.min(epoch)
+    max_val = np.max(epoch)
+    if max_val == min_val:
+        return np.zeros_like(epoch)  # avoid division by zero
+    return (epoch - min_val) / (max_val - min_val)
+
+
+def tACS_removal(EEG_segment):
+    # 1. initialize 'cleaned_eeg' array
+    cleaned_eeg = np.zeros(np.shape(EEG_segment))
+    # 2. normalize data
+    normalized_eeg = min_max_normalize(EEG_segment)
+    # 3. data dimension to fit tf model
+    ready_eeg = normalized_eeg.reshape(1,1000,1)
+    # 4. tf model inference
+    encoded_layer = best_autoencoder.encoder(ready_eeg).numpy()
+    decoded_layer = best_autoencoder.decoder(encoded_layer).numpy()
+    decoded_layer = np.squeeze(decoded_layer)
+    # 5. assign
+    cleaned_eeg = decoded_layer
+    return cleaned_eeg
+
+
+def get_mean_var_prestim(prestim_data):
+    mean_value = np.mean(prestim_data)
+    std_value = np.std(prestim_data)
+    max_value = np.max(prestim_data)
+    min_value = np.min(prestim_data)
+    return mean_value, std_value, max_value, min_value
+
+
+def denormalization(cleaned_eeg, max_value, min_value):
+    # denormalized_eeg = cleaned_eeg * std_value + mean_value
+    denormalized_eeg = cleaned_eeg * (max_value - min_value) + min_value
+    return denormalized_eeg
+    
+    
+    
+## 
+segment_length = sampling_rate*2 
+loop = int(len(x_data_stim)/segment_length)
+mean_value, std_value, max_value, min_value = get_mean_var_prestim(x_data_prestim)
+buffer = []
+for i in range(loop):
+    segment = x_data_stim[i*segment_length : (i+1)*segment_length]
+    segment_cleaned = tACS_removal(segment)
+    segment_denorm = denormalization(segment_cleaned, mean_value, std_value)
+    
+    buffer.append(segment_denorm)
+
+
+processed_data_stim = np.concatenate(buffer)
+    
+
+denormalized = np.concatenate((x_data_prestim, np.squeeze(processed_data_stim), x_data_poststim))
+    
+    
+    
+    
+plt.figure()
+plt.plot(denormalized)
+    
+    
+    
+    
+    
+    
+
+
